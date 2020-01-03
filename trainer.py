@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 
+import tensorboardX
 import contextlib
 import time
 
@@ -50,38 +51,95 @@ def main(_):
             with tf.device('/cpu'):
                 ph = tf.placeholder(tf.float32, shape=[None, 4])
                 l1 = tf.layers.dense(inputs=ph, units=256, activation=tf.nn.relu)
+                for i in range(100):
+                    l1 = tf.layers.dense(inputs=l1, units=256, activation=tf.nn.relu)
                 l2 = tf.layers.dense(inputs=l1, units=3, activation=tf.nn.softmax)
 
         ## build learner
         if is_learner:
-            ph = tf.placeholder(tf.float32, shape=[None, 4])
-            l1 = tf.layers.dense(inputs=ph, units=256, activation=tf.nn.relu)
-            l2 = tf.layers.dense(inputs=l1, units=3, activation=tf.nn.softmax)
+            with tf.device('/gpu'):
+                ph = tf.placeholder(tf.float32, shape=[None, 28, 28, 1])
+                label = tf.placeholder(tf.int32, shape=[None])
+                onehot = tf.one_hot(label, 10)
+
+                conv1 = tf.layers.conv2d(
+                    inputs=ph, filters=32, kernel_size=[5, 5], padding='valid',
+                    strides=[2, 2], activation=tf.nn.relu)
+                conv2 = tf.layers.conv2d(
+                    inputs=conv1, filters=32, kernel_size=[5, 5], padding='valid',
+                    strides=[2, 2], activation=tf.nn.relu)
+                flatten = tf.layers.flatten(conv2)
+                predict = tf.layers.dense(inputs=flatten, units=10, activation=tf.nn.softmax)
+
+                cross_entropy = tf.reduce_mean(-onehot * tf.log(predict))
+                train = tf.train.AdamOptimizer(0.0001).minimize(cross_entropy)
+
+        else:
+            with tf.device('/cpu'):
+                ph = tf.placeholder(tf.float32, shape=[None, 28, 28, 1])
+                label = tf.placeholder(tf.int32, shape=[None])
+                onehot = tf.one_hot(label, 10)
+
+                conv1 = tf.layers.conv2d(
+                    inputs=ph, filters=32, kernel_size=[5, 5], padding='valid',
+                    strides=[2, 2], activation=tf.nn.relu)
+                conv2 = tf.layers.conv2d(
+                    inputs=conv1, filters=32, kernel_size=[5, 5], padding='valid',
+                    strides=[2, 2], activation=tf.nn.relu)
+                flatten = tf.layers.flatten(conv2)
+                predict = tf.layers.dense(inputs=flatten, units=10, activation=tf.nn.softmax)
+
+                cross_entropy = tf.reduce_mean(-onehot * tf.log(predict))
+                train = tf.train.AdamOptimizer(0.0001).minimize(cross_entropy)
 
         sess = tf.Session(server.target)
         sess.run(tf.global_variables_initializer())
 
+    ((train_data, train_labels),
+     (eval_data, eval_labels)) = tf.keras.datasets.mnist.load_data()
+
+    train_data = train_data/np.float32(255)
+    train_data = np.expand_dims(train_data, axis=3)
+    train_labels = train_labels.astype(np.int32)
+
+    batch_size = 50
+    data_size = len(train_data)
+    epoch_time = int(data_size / batch_size)
+
     if is_learner:
-        while True:
+
+        writer = tensorboardX.SummaryWriter('runs/gpu')
+        for i in range(epoch_time):
+            batch_data = train_data[i*batch_size : (i+1)*batch_size]
+            batch_label = train_labels[i*batch_size : (i+1)*batch_size]
+
             start_time = time.time()
-            sess.run(
-                l2,
-                feed_dict={ph: [[1,2,3,4]]})
+            loss, _ = sess.run(
+                [cross_entropy, train],
+                feed_dict={ph: batch_data, label: batch_label})
             end_time = time.time()
 
-            print('gpu operation time : {}'.format(end_time - start_time))
-            print('######')
+            print(end_time - start_time, loss)
+
+            writer.add_scalar('data/time', end_time - start_time, i)
+            writer.add_scalar('data/loss', loss, i)
 
     else:
-        while True:
+        writer = tensorboardX.SummaryWriter('runs/cpu')
+        for i in range(epoch_time):
+            batch_data = train_data[i*batch_size : (i+1)*batch_size]
+            batch_label = train_labels[i*batch_size : (i+1)*batch_size]
+
             start_time = time.time()
-            sess.run(
-                l2,
-                feed_dict={ph: [[1,2,3,4]]})
+            loss, _ = sess.run(
+                [cross_entropy, train],
+                feed_dict={ph: batch_data, label: batch_label})
             end_time = time.time()
 
-            print('cpu operation time : {}'.format(end_time - start_time))
-            print('######')
+            print(end_time - start_time, loss)
+
+            writer.add_scalar('data/time', end_time - start_time, i)
+            writer.add_scalar('data/loss', loss, i)
 
 if __name__ == '__main__':
     tf.app.run()
